@@ -125,3 +125,23 @@ def test_pdf_evidence_without_bbox_fails_location_gate() -> None:
     claim = context.claims[0].model_copy(update={"evidence": evidence})
     report = QualityGateRunner().run(context.model_copy(update={"claims": [claim]}))
     assert "EVIDENCE_UNLOCATABLE" in report.failed_codes
+
+
+def test_soft_claim_gates_preserve_low_trust_signal_for_review() -> None:
+    rejected = VerifiedClaim(
+        text="The tweet has 116 replies.",
+        claim_type="fact",
+        confidence=0.9,
+        verification_status="rejected",
+        reason="quote not found",
+    )
+    context = valid_context().model_copy(
+        update={"claims": [*valid_context().claims, rejected], "strict_claim_gates": False}
+    )
+
+    report = QualityGateRunner().run(context)
+
+    assert report.status == "passed"
+    assert "CLAIM_UNGROUNDED" not in report.failed_codes
+    assert "EVIDENCE_UNLOCATABLE" not in report.failed_codes
+    assert "EVIDENCE_MISMATCH" not in report.failed_codes

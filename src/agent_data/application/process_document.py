@@ -24,6 +24,7 @@ from agent_data.evidence.verifier import EvidenceVerifier
 from agent_data.export.exporters import ArtifactExporter
 from agent_data.extraction.extractor import DocumentExtractor
 from agent_data.parsers.registry import ParserRegistry
+from agent_data.quality.cross_verification import CrossVerifier
 from agent_data.quality.gates import QualityGateRunner
 from agent_data.quality.profile import QualityProfiler
 from agent_data.quality.scorer import QualityScorer
@@ -51,6 +52,7 @@ class ProcessDocument:
         scorer: QualityScorer,
         exporter: ArtifactExporter,
         profiler: QualityProfiler | None = None,
+        cross_verifier: CrossVerifier | None = None,
         harness: Harness | None = None,
     ) -> None:
         self.source_resolver = source_resolver
@@ -61,6 +63,11 @@ class ProcessDocument:
         self.scorer = scorer
         self.exporter = exporter
         self.profiler = profiler or QualityProfiler()
+        self.cross_verifier = cross_verifier or CrossVerifier(
+            source_resolver=source_resolver,
+            parser_registry=parser_registry,
+            verifier=verifier,
+        )
         self.harness = harness or Harness()
 
     def run(self, value: str, *, task_context: str | None = None) -> ProcessResult:
@@ -106,6 +113,7 @@ class ProcessDocument:
             "evidence",
             lambda: self.verifier.verify(extraction.claims, parsed.content_blocks, source.raw_hash),
         )
+        source_trust = QualityProfiler._source_trust(source)
         clean_hash = "sha256:" + hashlib.sha256(parsed.markdown.encode()).hexdigest()
         gate_context = GateContext(
             schema_valid=True,
@@ -118,19 +126,13 @@ class ProcessDocument:
             content_blocks=parsed.content_blocks,
             claims=verification.claims,
             access_rights="unknown",
+            strict_claim_gates=not source_trust.requires_cross_verification,
         )
         gate_report = self.harness.execute("quality_gates", lambda: self.gates.run(gate_context))
-        dimensions = self._dimensions(
-            source.kind, source.canonical_url, parsed.warnings, verification
-        )
         task_scores = TaskScores.for_context(
             task_context,
             extraction.relevance,
             extraction.actionability,
-        )
-        quality = self.harness.execute(
-            "quality_score",
-            lambda: self.scorer.score(dimensions, gate_report, task_scores),
         )
         quality_profile = self.harness.execute(
             "quality_profile",
@@ -141,6 +143,30 @@ class ProcessDocument:
                 verification=verification,
                 task_scores=task_scores,
             ),
+        )
+        cross_verification = self.harness.execute(
+            "cross_verification",
+            lambda: self.cross_verifier.verify(
+                required=quality_profile.source_trust.requires_cross_verification,
+                source=source,
+                parsed=parsed,
+                claims=verification.claims,
+            ),
+        )
+        quality_profile = self.profiler.with_cross_verification(
+            quality_profile,
+            cross_verification,
+        )
+        dimensions = self._dimensions(
+            source.kind,
+            source.canonical_url,
+            parsed.warnings,
+            verification,
+            source_trust_score=quality_profile.source_trust.score,
+        )
+        quality = self.harness.execute(
+            "quality_score",
+            lambda: self.scorer.score(dimensions, gate_report, task_scores),
         )
         quality = quality.model_copy(update={"quality_profile": quality_profile})
         document_id = f"doc_{source.raw_hash.removeprefix('sha256:')[:16]}"
@@ -153,19 +179,22 @@ class ProcessDocument:
             clean_hash,
             quality,
         )
-        ready = gate_report.status == "passed" and quality.quality_level != "Rejected"
-        if not ready:
-            package = package.model_copy(update={"status": "failed"})
+        publishable = gate_report.status == "passed" and quality.quality_level != "Rejected"
+        agent_ready = publishable and quality_profile.agent_ready
+        package_status = "ready" if agent_ready else ("needs_review" if publishable else "failed")
+        package = package.model_copy(update={"status": package_status})
         report = {
             "gate_status": gate_report.status,
             "quality_level": quality.quality_level,
             "intrinsic_score": quality.intrinsic_score,
+            "quality_profile": quality_profile.model_dump(mode="json"),
+            "cross_verification": cross_verification.model_dump(mode="json"),
             "failed_codes": gate_report.failed_codes,
             "checks": [check.model_dump(mode="json") for check in gate_report.checks],
             "claim_results": [claim.model_dump(mode="json") for claim in verification.claims],
         }
         run_record = {
-            "status": "ready" if ready else "rejected",
+            "status": package_status if publishable else "rejected",
             "document_id": document_id,
             "pipeline_version": __version__,
             "parser": {"name": parsed.parser_name, "version": parsed.parser_version},
@@ -178,25 +207,31 @@ class ProcessDocument:
                 document_id,
                 source,
                 parsed,
-                package if ready else None,
+                package if publishable else None,
                 report,
                 run_record,
             ),
         )
         return ProcessResult(
-            status="ready" if ready else "rejected",
-            exit_code=0 if ready else 2,
+            status=package_status if publishable else "rejected",
+            exit_code=0 if publishable else 2,
             document_id=document_id,
             output_dir=paths.root,
-            package=package if ready else None,
+            package=package if publishable else None,
         )
 
     @staticmethod
-    def _dimensions(source_kind, canonical_url, warnings, verification):
+    def _dimensions(source_kind, canonical_url, warnings, verification, source_trust_score=None):
         facts = [claim for claim in verification.claims if claim.claim_type == "fact"]
         verified_count = sum(claim.verification_status == "verified" for claim in facts)
         evidence_score = verified_count / len(facts) if facts else 0.7
-        source_score = 0.7 if canonical_url and urlsplit(canonical_url).scheme == "https" else 0.6
+        source_score = (
+            source_trust_score
+            if source_trust_score is not None
+            else 0.7
+            if canonical_url and urlsplit(canonical_url).scheme == "https"
+            else 0.6
+        )
         return {
             "source_trust": QualityDimension(
                 score=source_score,
@@ -280,10 +315,26 @@ class ProcessDocument:
                 parser_version=parsed.parser_version,
             ),
             quality=quality,
-            usage=UsageData(
-                recommended_uses=["retrieval", "summarization"],
-                caveats=[]
-                if quality.quality_level == "A"
-                else ["Review quality report before use"],
-            ),
+            usage=ProcessDocument._usage(quality),
+        )
+
+    @staticmethod
+    def _usage(quality) -> UsageData:
+        profile = quality.quality_profile
+        if profile is None:
+            return UsageData(recommended_uses=["retrieval", "summarization"])
+        caveats = []
+        if not profile.agent_ready:
+            caveats.append(f"Not agent-ready; route to {profile.store_target}")
+        if (
+            profile.source_trust.requires_cross_verification
+            and profile.cross_verification is not None
+            and profile.cross_verification.status == "supported"
+        ):
+            caveats.append("Cross-source verification supported by an independent source")
+        elif profile.source_trust.requires_cross_verification:
+            caveats.append("Requires cross-source verification before fact use")
+        return UsageData(
+            recommended_uses=profile.source_trust.allowed_uses,
+            caveats=caveats,
         )

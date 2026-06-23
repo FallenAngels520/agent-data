@@ -84,8 +84,12 @@ def test_quality_profile_explains_source_freshness_verifiability_and_noise() -> 
     )
 
     assert profile.source_trust.score == 0.55
-    assert profile.source_trust.tier == "unverified"
+    assert profile.source_trust.tier == "D"
     assert profile.source_trust.requires_cross_verification is True
+    assert profile.data_type == "evidence_data"
+    assert profile.verification_level == "medium"
+    assert profile.store_target == "signal_pool"
+    assert profile.agent_ready is False
     assert profile.freshness.staleness_risk == "low"
     assert profile.verifiability.verified_fact_claims == 1
     assert profile.structure.score == 1
@@ -122,9 +126,12 @@ def test_source_tier_policy_marks_primary_sources_as_fact_usable() -> None:
         task_scores=TaskScores(),
     )
 
-    assert profile.source_trust.tier == "primary"
+    assert profile.source_trust.tier == "S"
     assert profile.source_trust.requires_cross_verification is False
     assert "agent_decision" in profile.source_trust.allowed_uses
+    assert profile.data_type == "fact_data"
+    assert profile.store_target == "agent_ready_data_store"
+    assert profile.agent_ready is True
     assert profile.noise.risk_tags == []
 
 
@@ -152,9 +159,13 @@ def test_source_tier_policy_marks_community_sources_as_signal_only() -> None:
         task_scores=TaskScores(),
     )
 
-    assert profile.source_trust.tier == "community_signal"
+    assert profile.source_trust.tier == "C"
     assert profile.source_trust.requires_cross_verification is True
     assert profile.source_trust.allowed_uses == ["trend_signal", "lead_generation"]
+    assert profile.data_type == "signal_data"
+    assert profile.verification_level == "medium"
+    assert profile.store_target == "signal_pool"
+    assert profile.agent_ready is False
     assert "high_noise" in profile.noise.risk_tags
 
 
@@ -182,6 +193,8 @@ def test_source_tier_policy_marks_blogs_as_secondary_sources() -> None:
         task_scores=TaskScores(),
     )
 
-    assert profile.source_trust.tier == "secondary"
+    assert profile.source_trust.tier == "A"
     assert profile.source_trust.requires_cross_verification is True
+    assert profile.store_target == "verified_knowledge_base"
+    assert profile.agent_ready is False
     assert "secondary_source" in profile.noise.risk_tags

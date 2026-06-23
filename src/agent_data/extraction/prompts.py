@@ -21,6 +21,9 @@ Return one JSON object using exactly this shape and no additional fields:
 Every claim must quote source text exactly and use an existing candidate_block_id.
 For every fact claim, text MUST be byte-for-byte identical to quote.
 Do not correct OCR, spelling, punctuation, or whitespace in fact claim text.
+Do not extract social navigation, login prompts, signup prompts, terms/privacy links, view counts,
+reply counts, repost counts, like counts, bookmark counts, or other volatile engagement metrics as
+fact claims.
 Do not invent evidence or block identifiers. Confidence is in [0, 1].
 When task_context is provided, relevance and actionability must be numbers in [0, 1].
 Without task_context, relevance and actionability must be null."""

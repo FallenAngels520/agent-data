@@ -54,6 +54,20 @@ def test_can_explicitly_allow_private_url() -> None:
     assert source.canonical_url == "http://127.0.0.1/page"
 
 
+def test_html_url_without_file_extension_gets_html_filename() -> None:
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            content=b"<html><article>Hello</article></html>",
+            headers={"content-type": "text/html; charset=utf-8"},
+        )
+    )
+    with httpx.Client(transport=transport) as client:
+        source = SourceResolver(client=client).resolve("https://example.com/status/12345")
+
+    assert source.filename == "12345.html"
+
+
 def test_enforces_maximum_download_size() -> None:
     transport = httpx.MockTransport(lambda request: httpx.Response(200, content=b"x" * 11))
     with httpx.Client(transport=transport) as client:

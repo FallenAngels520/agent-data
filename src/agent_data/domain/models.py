@@ -186,6 +186,7 @@ class GateContext(DomainModel):
     claims: list[VerifiedClaim]
     issues: list[QualityIssue] = Field(default_factory=list)
     access_rights: str = "unknown"
+    strict_claim_gates: bool = True
 
 
 class GateCheck(DomainModel):
@@ -211,7 +212,22 @@ class QualityMetric(DomainModel):
     reasons: list[str] = Field(default_factory=list)
 
 
-SourceTier = Literal["primary", "secondary", "community_signal", "unverified", "blocked"]
+SourceTier = Literal["S", "A", "B", "C", "D"]
+DataType = Literal[
+    "fact_data",
+    "signal_data",
+    "evidence_data",
+    "opinion_data",
+    "case_data",
+    "benchmark_data",
+]
+VerificationLevel = Literal["strong", "medium", "light", "experimental"]
+StoreTarget = Literal[
+    "raw_data_lake",
+    "signal_pool",
+    "verified_knowledge_base",
+    "agent_ready_data_store",
+]
 
 
 class SourceTrustProfile(QualityMetric):
@@ -238,13 +254,50 @@ class NoiseProfile(QualityMetric):
     risk_tags: list[str] = Field(default_factory=list)
 
 
+CrossVerificationStatus = Literal[
+    "not_required",
+    "not_attempted",
+    "supported",
+    "insufficient",
+    "failed",
+]
+CrossVerificationSourceStatus = Literal["supported", "no_support", "failed", "skipped"]
+
+
+class CrossVerificationSource(DomainModel):
+    url: str
+    domain: str | None = None
+    source_tier: SourceTier
+    independent: bool
+    status: CrossVerificationSourceStatus
+    supported_claims: int = Field(default=0, ge=0)
+    error: str | None = None
+
+
+class CrossVerificationResult(DomainModel):
+    required: bool
+    status: CrossVerificationStatus
+    checked_at: datetime
+    candidate_count: int = Field(ge=0)
+    supported_claims: int = Field(ge=0)
+    total_claims: int = Field(ge=0)
+    sources: list[CrossVerificationSource] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list)
+
+
 class QualityProfile(DomainModel):
     source_trust: SourceTrustProfile
+    data_type: DataType
+    verification_level: VerificationLevel
+    store_target: StoreTarget
+    agent_ready: bool
+    policy_reasons: list[str] = Field(default_factory=list)
     freshness: FreshnessProfile
     verifiability: VerifiabilityProfile
     structure: QualityMetric
     task_relevance: QualityMetric | None = None
     noise: NoiseProfile
+    cross_verification: CrossVerificationResult | None = None
 
 
 class QualityResult(DomainModel):

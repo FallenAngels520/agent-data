@@ -102,7 +102,7 @@ class SourceResolver:
                 stage="source",
             )
         media_type = response.headers.get("content-type", "text/html").split(";", 1)[0]
-        filename = Path(urlsplit(str(response.url)).path).name or "index.html"
+        filename = self._download_filename(str(response.url), media_type)
         return ResolvedSource(
             kind="url",
             original=value,
@@ -128,6 +128,13 @@ class SourceResolver:
             netloc = f"{host}:{port}"
         path = parsed.path or "/"
         return urlunsplit((parsed.scheme.lower(), netloc, path, parsed.query, ""))
+
+    @staticmethod
+    def _download_filename(url: str, media_type: str) -> str:
+        filename = Path(urlsplit(url).path).name or "index.html"
+        if media_type == "text/html" and not Path(filename).suffix:
+            return f"{filename}.html"
+        return filename
 
     @staticmethod
     def _is_private_host(host: str) -> bool:

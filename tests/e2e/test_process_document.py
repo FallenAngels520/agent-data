@@ -8,6 +8,7 @@ from agent_data.application.process_document import ProcessDocument
 from agent_data.domain.errors import ErrorCode, PipelineError
 from agent_data.domain.models import (
     ClaimCandidate,
+    ContentBlock,
     ExtractionLineage,
     ExtractionResult,
     ParsedDocument,
@@ -106,8 +107,11 @@ def test_offline_pdf_flow_exports_ready_package_with_traceable_evidence(tmp_path
     assert payload["quality"]["gate_status"] == "passed"
     profile = payload["quality"]["quality_profile"]
     assert profile["verifiability"]["verified_fact_claims"] == 1
-    assert profile["source_trust"]["tier"] == "primary"
+    assert profile["source_trust"]["tier"] == "S"
     assert profile["source_trust"]["requires_cross_verification"] is False
+    assert profile["data_type"] == "fact_data"
+    assert profile["store_target"] == "agent_ready_data_store"
+    assert profile["agent_ready"] is True
     assert profile["source_trust"]["reasons"] == ["source_kind=pdf"]
     assert profile["noise"]["risk_tags"] == []
 
@@ -186,9 +190,213 @@ def test_offline_url_flow_uses_real_trafilatura_adapter(tmp_path: Path) -> None:
     finally:
         client.close()
 
-    assert result.status == "ready"
+    assert result.status == "needs_review"
     assert result.package is not None
     evidence = result.package.knowledge.claims[0].evidence
     assert evidence is not None
     assert evidence.location.start_offset is not None
     assert result.package.lineage.parser_name == "trafilatura"
+    assert result.package.quality.quality_profile is not None
+    assert result.package.quality.quality_profile.store_target == "signal_pool"
+
+
+def test_community_signal_exports_needs_review_package_for_signal_pool(tmp_path: Path) -> None:
+    text = "AI tool discussion is trending. " + "Supporting context. " * 15
+
+    class SignalParser:
+        name = "signal"
+
+        def supports(self, source) -> bool:
+            return source.kind == "url"
+
+        def parse(self, source) -> ParsedDocument:
+            return ParsedDocument(
+                markdown=text,
+                content_blocks=[
+                    ContentBlock(
+                        block_id="block_1",
+                        type="text",
+                        text=text,
+                        order=0,
+                        start_offset=0,
+                        end_offset=len(text),
+                    )
+                ],
+                parser_name=self.name,
+                parser_version="1",
+            )
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=b"<html></html>"))
+    client = httpx.Client(transport=transport)
+    try:
+        process = ProcessDocument(
+            source_resolver=SourceResolver(client=client),
+            parser_registry=ParserRegistry({"signal": SignalParser()}, {"url": "signal"}),
+            extractor=DocumentExtractor(FixtureLLM("AI tool discussion is trending.")),
+            verifier=EvidenceVerifier(),
+            gates=QualityGateRunner(),
+            scorer=QualityScorer(),
+            exporter=ArtifactExporter(tmp_path / "output"),
+        )
+        result = process.run("https://x.com/example/status/1")
+    finally:
+        client.close()
+
+    assert result.status == "needs_review"
+    assert result.exit_code == 0
+    payload = json.loads((result.output_dir / "agent-ready.json").read_text(encoding="utf-8"))
+    assert payload["status"] == "needs_review"
+    profile = payload["quality"]["quality_profile"]
+    assert profile["source_trust"]["tier"] == "C"
+    assert profile["data_type"] == "signal_data"
+    assert profile["store_target"] == "signal_pool"
+    assert profile["agent_ready"] is False
+    assert profile["cross_verification"]["status"] == "not_attempted"
+    assert profile["cross_verification"]["reasons"] == ["no_candidate_links_found"]
+    assert payload["usage"]["recommended_uses"] == ["trend_signal", "lead_generation"]
+
+
+def test_social_signal_with_ungrounded_claim_exports_needs_review(tmp_path: Path) -> None:
+    text = "AI tool discussion is trending. " + "Supporting context. " * 15
+
+    class SignalParser:
+        name = "signal"
+
+        def supports(self, source) -> bool:
+            return source.kind == "url"
+
+        def parse(self, source) -> ParsedDocument:
+            return ParsedDocument(
+                markdown=text,
+                content_blocks=[
+                    ContentBlock(
+                        block_id="block_1",
+                        type="text",
+                        text=text,
+                        order=0,
+                        start_offset=0,
+                        end_offset=len(text),
+                    )
+                ],
+                parser_name=self.name,
+                parser_version="1",
+            )
+
+    class MixedClaimLLM:
+        def extract(self, blocks, task_context=None) -> ExtractionResult:
+            return ExtractionResult(
+                summary="Signal summary.",
+                key_points=["A social signal was found."],
+                claims=[
+                    ClaimCandidate(
+                        text="AI tool discussion is trending.",
+                        claim_type="fact",
+                        confidence=0.9,
+                        quote="AI tool discussion is trending.",
+                        candidate_block_id=blocks[0].block_id,
+                    ),
+                    ClaimCandidate(
+                        text="The tweet has 116 replies.",
+                        claim_type="fact",
+                        confidence=0.7,
+                        quote="116 replies",
+                        candidate_block_id=blocks[0].block_id,
+                    ),
+                ],
+                lineage=ExtractionLineage(
+                    provider="fixture", model="fixture", prompt_version="extract-v1"
+                ),
+            )
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=b"<html></html>"))
+    client = httpx.Client(transport=transport)
+    try:
+        process = ProcessDocument(
+            source_resolver=SourceResolver(client=client),
+            parser_registry=ParserRegistry({"signal": SignalParser()}, {"url": "signal"}),
+            extractor=DocumentExtractor(MixedClaimLLM()),
+            verifier=EvidenceVerifier(),
+            gates=QualityGateRunner(),
+            scorer=QualityScorer(),
+            exporter=ArtifactExporter(tmp_path / "output"),
+        )
+        result = process.run("https://x.com/example/status/1")
+    finally:
+        client.close()
+
+    assert result.status == "needs_review"
+    assert result.package is not None
+    report = json.loads((result.output_dir / "quality-report.json").read_text(encoding="utf-8"))
+    assert report["gate_status"] == "passed"
+    assert report["claim_results"][1]["verification_status"] == "rejected"
+    assert (result.output_dir / "agent-ready.json").exists()
+
+
+def test_social_signal_cross_verifies_against_authoritative_link(tmp_path: Path) -> None:
+    signal_text = (
+        "Claude Code supports artifacts. "
+        "[Official source](https://claude.com/blog/artifacts-in-claude-code) "
+        + "Supporting context. "
+        * 15
+    )
+    official_text = "Claude Code supports artifacts. " + "Official context. " * 15
+
+    class LinkedParser:
+        name = "linked"
+
+        def supports(self, source) -> bool:
+            return source.kind == "url"
+
+        def parse(self, source) -> ParsedDocument:
+            text = official_text if "claude.com" in (source.canonical_url or "") else signal_text
+            return ParsedDocument(
+                markdown=text,
+                content_blocks=[
+                    ContentBlock(
+                        block_id="block_1",
+                        type="text",
+                        text=text,
+                        order=0,
+                        start_offset=0,
+                        end_offset=len(text),
+                    )
+                ],
+                parser_name=self.name,
+                parser_version="1",
+            )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        content = official_text if request.url.host == "claude.com" else signal_text
+        return httpx.Response(
+            200,
+            content=f"<html><body>{content}</body></html>".encode(),
+            headers={"content-type": "text/html; charset=utf-8"},
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    try:
+        process = ProcessDocument(
+            source_resolver=SourceResolver(client=client),
+            parser_registry=ParserRegistry({"linked": LinkedParser()}, {"url": "linked"}),
+            extractor=DocumentExtractor(FixtureLLM("Claude Code supports artifacts.")),
+            verifier=EvidenceVerifier(),
+            gates=QualityGateRunner(),
+            scorer=QualityScorer(),
+            exporter=ArtifactExporter(tmp_path / "output"),
+        )
+        result = process.run("https://x.com/example/status/1")
+    finally:
+        client.close()
+
+    assert result.status == "needs_review"
+    payload = json.loads((result.output_dir / "agent-ready.json").read_text(encoding="utf-8"))
+    profile = payload["quality"]["quality_profile"]
+    cross = profile["cross_verification"]
+    assert cross["status"] == "supported"
+    assert cross["supported_claims"] == 1
+    assert cross["sources"][0]["url"] == "https://claude.com/blog/artifacts-in-claude-code"
+    assert cross["sources"][0]["source_tier"] == "S"
+    assert cross["sources"][0]["independent"] is True
+    assert profile["store_target"] == "verified_knowledge_base"
+    report = json.loads((result.output_dir / "quality-report.json").read_text(encoding="utf-8"))
+    assert report["cross_verification"]["status"] == "supported"

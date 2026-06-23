@@ -29,6 +29,11 @@
     "risk_tags": [],
     "reasons": ["https_source"]
   },
+  "data_type": "fact_data",
+  "verification_level": "strong",
+  "store_target": "agent_ready_data_store",
+  "agent_ready": true,
+  "policy_reasons": ["authoritative_source"],
   "freshness": {
     "score": 0.9,
     "last_checked_at": "2026-06-23T00:00:00Z",
@@ -53,27 +58,56 @@
 
 | 等级 | 来源类型 | 默认策略 |
 |---|---|---|
-| `primary` | 官网、官方文档、API 文档、GitHub 原仓库、论文原文、PDF 原件 | 可作为事实来源，但 claim 仍需 quote evidence |
-| `secondary` | 技术博客、公司工程博客、公众号、媒体报道、论文解读 | 关键事实需要交叉验证 |
-| `community_signal` | X、Reddit、Hacker News、论坛、评论区 | 只能作为趋势信号或线索，必须交叉验证 |
-| `unverified` | 未知网站、聚合页、无法判断来源等级的网页 | 只作为候选证据，必须交叉验证 |
-| `blocked` | 内容农场、侵权、无法追溯、受限内容 | 不进入高质量数据层 |
+| `S` | 官网、官方文档、API 文档、GitHub 原仓库、论文原文、PDF 原件 | 可作为事实来源，但 claim 仍需 quote evidence |
+| `A` | 技术博客、公司工程博客、公众号、专业媒体、论文解读 | 关键事实需要交叉验证 |
+| `B` | Reddit、Hacker News、GitHub issue、论坛、用户反馈 | 作为社区反馈和痛点信号，需要聚合验证 |
+| `C` | X、LinkedIn、YouTube、TikTok、小红书、抖音 | 只能作为趋势信号或线索，必须交叉验证 |
+| `D` | 未知网站、聚合页、搬运号、营销号、无法判断来源等级的网页 | 只作为候选证据，必须人工或多源复核 |
 
 当前实现先做单来源策略标注：
 
 ```json
 {
   "source_trust": {
-    "tier": "community_signal",
+    "tier": "C",
     "category": "social_discussion",
     "requires_cross_verification": true,
     "allowed_uses": ["trend_signal", "lead_generation"],
     "risk_tags": ["high_noise", "opinion_heavy"]
-  }
+  },
+  "data_type": "signal_data",
+  "verification_level": "medium",
+  "store_target": "signal_pool",
+  "agent_ready": false
 }
 ```
 
 真正的多来源交叉验证需要等 `discovery/`、`storage/` 和 topic package 能力具备后再实现。
+
+## 数据类型与入库目标
+
+单文档 pipeline 现在只负责判断数据应进入哪一层，而不是把所有采集结果都当作 Agent-ready。
+
+| 数据类型 | 说明 | 默认入库目标 |
+|---|---|---|
+| `fact_data` | 来自 S 级来源、可定位证据的事实数据 | `agent_ready_data_store` |
+| `evidence_data` | 可作为候选证据或二级分析材料的数据 | `verified_knowledge_base` 或 `signal_pool` |
+| `signal_data` | 趋势、痛点、讨论热度、早期线索 | `signal_pool` |
+| `opinion_data` | 作者观点、方法论、判断 | `signal_pool` |
+| `case_data` | 案例过程、条件、成本、风险 | `verified_knowledge_base` |
+| `benchmark_data` | 评测、实验、对比结果 | `verified_knowledge_base`，高风险场景需实验复核 |
+
+当前输出会包含：
+
+```json
+{
+  "verification_level": "strong|medium|light|experimental",
+  "store_target": "raw_data_lake|signal_pool|verified_knowledge_base|agent_ready_data_store",
+  "agent_ready": true
+}
+```
+
+如果 `agent_ready=false` 但硬性 Gate 通过，文档包状态为 `needs_review`，仍会导出，供后续验证或聚合。
 
 ## 当前落地边界
 

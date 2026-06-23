@@ -12,6 +12,11 @@ class QualityGateRunner:
     def run(self, context: GateContext) -> GateReport:
         block_ids = {block.block_id for block in context.content_blocks}
         facts = [claim for claim in context.claims if claim.claim_type == "fact"]
+        gate_facts = (
+            facts
+            if context.strict_claim_gates
+            else [claim for claim in facts if claim.verification_status == "verified"]
+        )
         located = bool(context.content_blocks) and all(
             (
                 claim.evidence is not None
@@ -27,13 +32,13 @@ class QualityGateRunner:
                     )
                 )
             )
-            for claim in facts
+            for claim in gate_facts
         )
         fidelity = all(
             claim.evidence is not None
             and bool(claim.evidence.quote.strip())
             and claim.verification_status == "verified"
-            for claim in facts
+            for claim in gate_facts
         )
         clean_hash = "sha256:" + hashlib.sha256(context.clean_content.encode()).hexdigest()
         checks = [
@@ -64,9 +69,13 @@ class QualityGateRunner:
             ),
             self._check(
                 "claim_grounding",
-                all(
-                    claim.verification_status == "verified" and claim.evidence is not None
-                    for claim in facts
+                (
+                    all(
+                        claim.verification_status == "verified" and claim.evidence is not None
+                        for claim in facts
+                    )
+                    if context.strict_claim_gates
+                    else True
                 ),
                 "CLAIM_UNGROUNDED",
                 "All fact claims are grounded",

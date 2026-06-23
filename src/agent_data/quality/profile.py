@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 from agent_data.domain.models import (
+    CrossVerificationResult,
     ExtractionResult,
     FreshnessProfile,
     NoiseProfile,
@@ -29,8 +30,14 @@ class QualityProfiler:
         task_scores: TaskScores,
     ) -> QualityProfile:
         source_trust = self._source_trust(source)
+        policy = self._policy(source_trust)
         return QualityProfile(
             source_trust=source_trust,
+            data_type=policy["data_type"],
+            verification_level=policy["verification_level"],
+            store_target=policy["store_target"],
+            agent_ready=policy["agent_ready"],
+            policy_reasons=policy["policy_reasons"],
             freshness=self._freshness(source, parsed),
             verifiability=self._verifiability(verification),
             structure=self._structure(parsed, extraction),
@@ -39,19 +46,39 @@ class QualityProfiler:
         )
 
     @staticmethod
+    def with_cross_verification(
+        profile: QualityProfile,
+        cross_verification: CrossVerificationResult,
+    ) -> QualityProfile:
+        if cross_verification.status != "supported":
+            return profile.model_copy(update={"cross_verification": cross_verification})
+        policy_reasons = [
+            *profile.policy_reasons,
+            "cross_verified_by_independent_source",
+        ]
+        update = {
+            "cross_verification": cross_verification,
+            "store_target": "verified_knowledge_base",
+            "policy_reasons": list(dict.fromkeys(policy_reasons)),
+        }
+        if profile.data_type == "signal_data":
+            update["data_type"] = "evidence_data"
+        return profile.model_copy(update=update)
+
+    @staticmethod
     def _source_trust(source: ResolvedSource) -> SourceTrustProfile:
         reasons = [f"source_kind={source.kind}"]
         if source.kind == "pdf":
             return SourceTrustProfile(
                 score=0.8,
-                tier="primary",
+                tier="S",
                 category="local_pdf",
                 requires_cross_verification=False,
                 allowed_uses=["fact_base", "retrieval", "agent_decision"],
                 reasons=reasons,
             )
         score = 0.55
-        tier = "unverified"
+        tier = "D"
         category = "unknown_web"
         requires_cross_verification = True
         allowed_uses = ["candidate_evidence"]
@@ -92,10 +119,15 @@ class QualityProfiler:
             "platform.openai.com",
         }
         community_domains = {
-            "x.com",
-            "twitter.com",
             "reddit.com",
             "news.ycombinator.com",
+        }
+        social_domains = {
+            "x.com",
+            "twitter.com",
+            "linkedin.com",
+            "youtube.com",
+            "tiktok.com",
         }
         secondary_domains = {
             "medium.com",
@@ -106,7 +138,7 @@ class QualityProfiler:
         if any(hostname == domain or hostname.endswith(f".{domain}") for domain in primary_domains):
             return {
                 "score": 0.9,
-                "tier": "primary",
+                "tier": "S",
                 "category": "authoritative_source",
                 "requires_cross_verification": False,
                 "allowed_uses": ["fact_base", "retrieval", "agent_decision"],
@@ -116,8 +148,21 @@ class QualityProfiler:
             hostname == domain or hostname.endswith(f".{domain}") for domain in community_domains
         ):
             return {
+                "score": 0.6,
+                "tier": "B",
+                "category": "community_feedback",
+                "requires_cross_verification": True,
+                "allowed_uses": ["pain_point_discovery", "trend_signal", "user_feedback"],
+                "risk_tags": [
+                    "community_feedback",
+                    "needs_aggregation",
+                    "requires_cross_verification",
+                ],
+            }
+        if any(hostname == domain or hostname.endswith(f".{domain}") for domain in social_domains):
+            return {
                 "score": 0.45,
-                "tier": "community_signal",
+                "tier": "C",
                 "category": "social_discussion",
                 "requires_cross_verification": True,
                 "allowed_uses": ["trend_signal", "lead_generation"],
@@ -133,7 +178,7 @@ class QualityProfiler:
         ):
             return {
                 "score": 0.65,
-                "tier": "secondary",
+                "tier": "A",
                 "category": "secondary_source",
                 "requires_cross_verification": True,
                 "allowed_uses": ["background", "candidate_evidence"],
@@ -141,11 +186,45 @@ class QualityProfiler:
             }
         return {
             "score": 0.55,
-            "tier": "unverified",
+            "tier": "D",
             "category": "unknown_web",
             "requires_cross_verification": True,
             "allowed_uses": ["candidate_evidence"],
             "risk_tags": ["unverified_source", "requires_cross_verification"],
+        }
+
+    @staticmethod
+    def _policy(source_trust: SourceTrustProfile) -> dict:
+        if source_trust.tier == "S":
+            return {
+                "data_type": "fact_data",
+                "verification_level": "strong",
+                "store_target": "agent_ready_data_store",
+                "agent_ready": True,
+                "policy_reasons": ["authoritative_source"],
+            }
+        if source_trust.tier == "A":
+            return {
+                "data_type": "evidence_data",
+                "verification_level": "medium",
+                "store_target": "verified_knowledge_base",
+                "agent_ready": False,
+                "policy_reasons": ["secondary_source_requires_cross_check"],
+            }
+        if source_trust.tier in {"B", "C"}:
+            return {
+                "data_type": "signal_data",
+                "verification_level": "medium",
+                "store_target": "signal_pool",
+                "agent_ready": False,
+                "policy_reasons": ["signal_source_requires_cross_check"],
+            }
+        return {
+            "data_type": "evidence_data",
+            "verification_level": "medium",
+            "store_target": "signal_pool",
+            "agent_ready": False,
+            "policy_reasons": ["unverified_source_requires_review"],
         }
 
     @staticmethod
