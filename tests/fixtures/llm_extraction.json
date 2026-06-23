@@ -1,0 +1,11 @@
+{
+  "id": "chatcmpl-fixture",
+  "choices": [
+    {
+      "message": {
+        "role": "assistant",
+        "content": "{\"summary\":\"A summary\",\"key_points\":[\"Point\"],\"claims\":[{\"text\":\"Revenue increased 10%.\",\"claim_type\":\"fact\",\"confidence\":0.9,\"quote\":\"Revenue increased 10%.\",\"candidate_block_id\":\"block_1\"}],\"entities\":[\"Revenue\"],\"topics\":[\"Growth\"],\"tags\":[\"finance\"],\"relevance\":0.8,\"actionability\":0.6}"
+      }
+    }
+  ]
+}

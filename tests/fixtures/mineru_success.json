@@ -1,0 +1,10 @@
+{
+  "backend": "pipeline",
+  "version": "3.0.0",
+  "results": {
+    "sample": {
+      "md_content": "# Title\n\nParagraph\n\n|A|B|",
+      "content_list": "[{\"type\":\"text\",\"text\":\"Title\",\"text_level\":1,\"bbox\":[10,20,900,80],\"page_idx\":0},{\"type\":\"text\",\"text\":\"Paragraph\",\"bbox\":[10,100,900,160],\"page_idx\":0},{\"type\":\"table\",\"table_body\":\"<table><tr><td>A</td><td>B</td></tr></table>\",\"bbox\":[10,200,900,500],\"page_idx\":1},{\"type\":\"list\",\"list_items\":[\"One\",\"Two\"],\"bbox\":[10,500,900,700],\"page_idx\":1},{\"type\":\"equation\",\"text\":\"x=1\",\"bbox\":[10,710,900,760],\"page_idx\":1}]"
+    }
+  }
+}

@@ -1,0 +1,9 @@
+.venv/
+.env
+.pytest_cache/
+.ruff_cache/
+.agents/
+__pycache__/
+*.py[cod]
+output/
+dist/

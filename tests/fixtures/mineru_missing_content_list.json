@@ -1,0 +1,9 @@
+{
+  "backend": "pipeline",
+  "version": "3.0.0",
+  "results": {
+    "sample": {
+      "md_content": "# Title"
+    }
+  }
+}
