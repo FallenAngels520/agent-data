@@ -206,6 +206,47 @@ class GateReport(DomainModel):
         return [check.code for check in self.checks if not check.passed]
 
 
+class QualityMetric(DomainModel):
+    score: float = Field(ge=0, le=1)
+    reasons: list[str] = Field(default_factory=list)
+
+
+SourceTier = Literal["primary", "secondary", "community_signal", "unverified", "blocked"]
+
+
+class SourceTrustProfile(QualityMetric):
+    tier: SourceTier
+    category: str
+    requires_cross_verification: bool = False
+    allowed_uses: list[str] = Field(default_factory=list)
+    risk_tags: list[str] = Field(default_factory=list)
+
+
+class FreshnessProfile(QualityMetric):
+    last_checked_at: datetime
+    published_at: str | None = None
+    staleness_risk: Literal["low", "medium", "high", "unknown"] = "unknown"
+
+
+class VerifiabilityProfile(QualityMetric):
+    verified_fact_claims: int = Field(ge=0)
+    total_fact_claims: int = Field(ge=0)
+    evidence_count: int = Field(ge=0)
+
+
+class NoiseProfile(QualityMetric):
+    risk_tags: list[str] = Field(default_factory=list)
+
+
+class QualityProfile(DomainModel):
+    source_trust: SourceTrustProfile
+    freshness: FreshnessProfile
+    verifiability: VerifiabilityProfile
+    structure: QualityMetric
+    task_relevance: QualityMetric | None = None
+    noise: NoiseProfile
+
+
 class QualityResult(DomainModel):
     gate_status: Literal["passed", "failed"]
     quality_level: Literal["A", "B", "C", "Rejected"]
@@ -214,6 +255,7 @@ class QualityResult(DomainModel):
     dimensions: dict[str, QualityDimension]
     checks: list[GateCheck]
     issues: list[QualityIssue] = Field(default_factory=list)
+    quality_profile: QualityProfile | None = None
 
 
 class SourceMetadata(DomainModel):

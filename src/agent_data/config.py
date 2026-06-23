@@ -28,7 +28,7 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
-        dotenv = dotenv_values(Path.cwd() / ".env")
+        dotenv = dotenv_values(Path.cwd() / ".env", encoding="utf-8-sig")
 
         def value(name: str, default: str = "") -> str:
             environment = os.getenv(name)

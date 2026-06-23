@@ -104,6 +104,12 @@ def test_offline_pdf_flow_exports_ready_package_with_traceable_evidence(tmp_path
     assert claim["evidence"]["location"]["page"] == 1
     assert claim["evidence"]["location"]["bbox"] == [1.0, 2.0, 3.0, 4.0]
     assert payload["quality"]["gate_status"] == "passed"
+    profile = payload["quality"]["quality_profile"]
+    assert profile["verifiability"]["verified_fact_claims"] == 1
+    assert profile["source_trust"]["tier"] == "primary"
+    assert profile["source_trust"]["requires_cross_verification"] is False
+    assert profile["source_trust"]["reasons"] == ["source_kind=pdf"]
+    assert profile["noise"]["risk_tags"] == []
 
 
 def test_ungrounded_claim_is_rejected_but_reports_are_preserved(tmp_path: Path) -> None:

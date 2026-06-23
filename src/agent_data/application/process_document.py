@@ -25,6 +25,7 @@ from agent_data.export.exporters import ArtifactExporter
 from agent_data.extraction.extractor import DocumentExtractor
 from agent_data.parsers.registry import ParserRegistry
 from agent_data.quality.gates import QualityGateRunner
+from agent_data.quality.profile import QualityProfiler
 from agent_data.quality.scorer import QualityScorer
 from agent_data.sources.resolver import SourceResolver
 
@@ -49,6 +50,7 @@ class ProcessDocument:
         gates: QualityGateRunner,
         scorer: QualityScorer,
         exporter: ArtifactExporter,
+        profiler: QualityProfiler | None = None,
         harness: Harness | None = None,
     ) -> None:
         self.source_resolver = source_resolver
@@ -58,6 +60,7 @@ class ProcessDocument:
         self.gates = gates
         self.scorer = scorer
         self.exporter = exporter
+        self.profiler = profiler or QualityProfiler()
         self.harness = harness or Harness()
 
     def run(self, value: str, *, task_context: str | None = None) -> ProcessResult:
@@ -120,18 +123,26 @@ class ProcessDocument:
         dimensions = self._dimensions(
             source.kind, source.canonical_url, parsed.warnings, verification
         )
+        task_scores = TaskScores.for_context(
+            task_context,
+            extraction.relevance,
+            extraction.actionability,
+        )
         quality = self.harness.execute(
             "quality_score",
-            lambda: self.scorer.score(
-                dimensions,
-                gate_report,
-                TaskScores.for_context(
-                    task_context,
-                    extraction.relevance,
-                    extraction.actionability,
-                ),
+            lambda: self.scorer.score(dimensions, gate_report, task_scores),
+        )
+        quality_profile = self.harness.execute(
+            "quality_profile",
+            lambda: self.profiler.build(
+                source=source,
+                parsed=parsed,
+                extraction=extraction,
+                verification=verification,
+                task_scores=task_scores,
             ),
         )
+        quality = quality.model_copy(update={"quality_profile": quality_profile})
         document_id = f"doc_{source.raw_hash.removeprefix('sha256:')[:16]}"
         package = self._package(
             document_id,

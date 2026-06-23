@@ -39,17 +39,20 @@ class Crawl4AIParser:
                 stage="parse",
             )
         url = source.canonical_url or source.original
-        task_id = self._submit(url)
-        payload = self._wait(task_id)
+        payload = self._crawl(url)
         return self._convert(payload, source)
 
-    def _submit(self, url: str) -> str:
-        response = self._request("POST", "/crawl", json={"urls": url, "priority": 10})
+    def _crawl(self, url: str) -> dict[str, Any]:
+        response = self._request("POST", "/crawl", json={"urls": [url]})
         payload = self._json(response, "crawl submission")
-        task_id = payload.get("task_id") if isinstance(payload, dict) else None
+        if not isinstance(payload, dict):
+            raise self._contract_error("crawl response must be an object")
+        task_id = payload.get("task_id")
+        if task_id is None:
+            return payload
         if not isinstance(task_id, str) or not task_id:
             raise self._contract_error("crawl submission did not return task_id")
-        return task_id
+        return self._wait(task_id)
 
     def _wait(self, task_id: str) -> dict[str, Any]:
         deadline = time.monotonic() + self.timeout_seconds
@@ -109,9 +112,9 @@ class Crawl4AIParser:
             ) from exc
 
     def _convert(self, payload: dict[str, Any], source: ResolvedSource) -> ParsedDocument:
-        result = payload.get("result")
+        result = self._result(payload)
         if not isinstance(result, dict):
-            raise self._contract_error("completed task did not include result object")
+            raise self._contract_error("crawl response did not include result object")
         markdown = self._markdown(result).strip()
         if self._is_unusable(markdown):
             raise PipelineError(
@@ -136,15 +139,34 @@ class Crawl4AIParser:
         )
 
     @staticmethod
+    def _result(payload: dict[str, Any]) -> dict[str, Any] | None:
+        result = payload.get("result")
+        if isinstance(result, dict):
+            return result
+        results = payload.get("results")
+        if isinstance(results, list) and results and isinstance(results[0], dict):
+            return results[0]
+        return None
+
+    @staticmethod
     def _markdown(result: dict[str, Any]) -> str:
         value = result.get("markdown")
         if isinstance(value, str):
             return value
         if isinstance(value, dict):
-            for key in ("fit_markdown", "raw_markdown", "markdown"):
+            for key in (
+                "fit_markdown",
+                "raw_markdown",
+                "markdown_with_citations",
+                "markdown",
+            ):
                 item = value.get(key)
-                if isinstance(item, str):
+                if isinstance(item, str) and item.strip():
                     return item
+        for key in ("fit_markdown", "raw_markdown", "markdown_with_citations"):
+            item = result.get(key)
+            if isinstance(item, str) and item.strip():
+                return item
         return ""
 
     @staticmethod
